@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Falar com o servidor (macros, config, versao nova do app). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Instalar a propria atualizacao. REQUEST_INSTALL_PACKAGES precisa ser
+         liberada uma vez no celular ("instalar apps desconhecidos");
+         UPDATE_PACKAGES_WITHOUT_USER_ACTION (Android 12+) e o que deixa o app
+         se atualizar sem ninguem confirmar. -->
+    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+    <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+
+    <application
+        android:allowBackup="true"
+        android:usesCleartextTraffic="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.AutoClick">
+
+        <!-- singleTask e obrigatorio pro disparo por comando (autorun): no modo
+             padrao, quando a tarefa ja existe em segundo plano o Android so a
+             traz pra frente e JOGA FORA os extras, entao onNewIntent nunca era
+             chamado e o comando se perdia calado. -->
+        <activity
+            android:name=".MainActivity"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:label="@string/app_name">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity>
+
+        <!-- Compartilhar o .json exportado. Nao adiciona NENHUMA permissao. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
+
+        <!-- Resultado da instalacao da atualizacao (PackageInstaller). -->
+        <receiver
+            android:name=".UpdateReceiver"
+            android:exported="false" />
+
+        <service
+            android:name=".ClickerService"
+            android:exported="true"
+            android:label="@string/service_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/accessibility_service_config" />
+        </service>
+    </application>
+
+</manifest>

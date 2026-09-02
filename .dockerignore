@@ -1,0 +1,13 @@
+.git
+.gradle
+build
+app/build
+local.properties
+.idea
+*.apk
+apk
+data
+node_modules
+.DS_Store
+*.md
+scripts

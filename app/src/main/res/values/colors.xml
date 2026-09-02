@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Fills translúcidos: funcionam sobre fundo claro E escuro -->
+    <color name="status_on_fill">#1F4CAF50</color>
+    <color name="status_off_fill">#1FF44336</color>
+    <color name="badge_fill">#1F2E6BE6</color>
+
+    <!-- Textos: par claro (aqui) / escuro (values-night) -->
+    <color name="status_on_text">#1B5E20</color>
+    <color name="status_off_text">#B3261E</color>
+    <color name="badge_text">#2E6BE6</color>
+</resources>

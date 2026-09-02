@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">AutoClick</string>
+    <string name="service_label">AutoClick (toques automáticos)</string>
+    <string name="service_description">Permite que o AutoClick repita os toques que você gravou. O app só olha a tela pra achar o botão Atualizar do Chrome quando você usa o passo 🔄. Fora isso, só executa gestos.</string>
+</resources>

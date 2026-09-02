@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="status_on_text">#A5D6A7</color>
+    <color name="status_off_text">#F2B8B5</color>
+    <color name="badge_text">#8FB2F2</color>
+</resources>

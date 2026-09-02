@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AutoClick · celulares</title>
+<style>
+  :root { --bg:#0f1420; --card:#171e2e; --line:#26304a; --tx:#e6ecf7; --mut:#8fa3c0; --ok:#4cd07d; --warn:#ffc107; --bad:#ff5c5c; --blue:#5b9dff; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--tx); font:14px/1.45 -apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif; }
+  header { padding:18px 20px 8px; display:flex; flex-wrap:wrap; gap:8px 24px; align-items:baseline; }
+  h1 { font-size:20px; margin:0; }
+  header .meta { color:var(--mut); }
+  header .meta b { color:var(--tx); }
+  main { padding:8px 20px 40px; }
+  .cards { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card h2 { margin:0 0 4px; font-size:16px; display:flex; justify-content:space-between; gap:8px; }
+  .card h2 small { color:var(--mut); font-weight:normal; font-size:12px; }
+  .row { display:flex; justify-content:space-between; gap:10px; padding:3px 0; border-top:1px dashed var(--line); }
+  .row:first-of-type { border-top:0; }
+  .k { color:var(--mut); }
+  .v { text-align:right; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .blue { color:var(--blue); }
+  .pill { display:inline-block; padding:1px 8px; border-radius:999px; font-size:12px; border:1px solid var(--line); }
+  .pill.ok { border-color:var(--ok); } .pill.bad { border-color:var(--bad); } .pill.warn { border-color:var(--warn); }
+  .id { font-family:ui-monospace,Menlo,monospace; font-size:11px; color:var(--mut); word-break:break-all; }
+  .empty { color:var(--mut); padding:30px 0; text-align:center; }
+  footer { color:var(--mut); font-size:12px; padding:0 20px 30px; }
+  code { background:#0b0f18; padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>AutoClick · celulares</h1>
+  <div class="meta" id="pub">carregando…</div>
+</header>
+<main>
+  <div class="cards" id="cards"></div>
+  <div class="empty" id="empty" hidden>Nenhum celular se apresentou ainda. Instale o app com o servidor configurado e aguarde a primeira sincronização (até 5 min).</div>
+</main>
+<footer id="foot"></footer>
+<script>
+const $ = (s) => document.querySelector(s);
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function ago(ms) {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `há ${s}s`;
+  if (s < 3600) return `há ${Math.round(s / 60)} min`;
+  if (s < 86400) return `há ${Math.round(s / 3600)} h`;
+  return `há ${Math.round(s / 86400)} dias`;
+}
+function mmss(s) { s = Math.max(0, Math.round(s)); return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`; }
+
+function stateText(d, now) {
+  const st = d.state || {};
+  if (!d.service) return ['<span class="bad">serviço DESLIGADO</span> (ligar em Acessibilidade)', 'bad'];
+  if (st.recording) return ['gravando um macro', 'warn'];
+  if (!st.playing) return ['parado', 'warn'];
+  const name = esc(st.macro || 'macro');
+  if (st.paused) return [`pausado · ${name}`, 'warn'];
+  const resets = st.resets ? ` · ${st.resets} resets` : '';
+  if (st.quietSleeping) return [`dormindo (Especial) · ${name} · feito ${st.loops || 0}x${resets}`, 'blue'];
+  if (st.recovering) return [`fora da rota, recuperando · ${name}${resets}`, 'warn'];
+  if (st.waiting) {
+    const left = (st.nextInS || 0) - (now - d.lastSeen) / 1000;
+    return [`rodando ${name} · feito ${st.loops || 0}x${resets} · próxima em ${mmss(left)}`, 'ok'];
+  }
+  return [`rodando ${name} · passo ${(st.step || 0) + 1}/${st.steps || '?'}${resets}`, 'ok'];
+}
+
+function updateText(d, app) {
+  const u = d.update || {};
+  if (!app || !app.available) return ['servidor sem APK', 'warn'];
+  if (d.versionCode >= app.versionCode) return ['✅ atualizado', 'ok'];
+  if (d.canInstall === false) return ['⚠️ sem permissão pra instalar (veja o README: appops REQUEST_INSTALL_PACKAGES)', 'warn'];
+  switch (u.status) {
+    case 'downloading': return [`⬇️ baixando a versão ${app.versionCode}…`, 'blue'];
+    case 'waiting': return ['⏳ baixada, esperando o macro terminar a passada', 'blue'];
+    case 'installing': return ['🔧 instalando…', 'blue'];
+    case 'needs_user': return ['⚠️ precisa de um toque no celular: abra o AutoClick e toque em "Instalar atualização"', 'warn'];
+    case 'failed': return [`❌ falhou: ${esc(u.error || '?')} (tenta de novo em 30 min)`, 'bad'];
+    default: return ['⏳ vai atualizar na próxima sincronização', 'blue'];
+  }
+}
+
+function render(data) {
+  const now = data.now || Date.now();
+  const app = data.app || {};
+  $('#pub').innerHTML = app.available
+    ? `App publicado: <b>${esc(app.versionName)}</b> (build ${app.versionCode}) · macros: <b>${data.macros.map(m => esc(m.key) + ' (' + m.steps + ' passos)').join(', ') || 'nenhum'}</b> · config ${esc(data.configRev)}`
+    : `Nenhum APK publicado ainda · macros: <b>${data.macros.map(m => esc(m.key)).join(', ') || 'nenhum'}</b>`;
+  const list = data.devices || [];
+  $('#empty').hidden = list.length > 0;
+  $('#cards').innerHTML = list.map((d) => {
+    const late = (now - d.lastSeen) > 2.5 * (d.pollSeconds || 300) * 1000;
+    const [stTxt, stCls] = stateText(d, now);
+    const [upTxt, upCls] = updateText(d, app);
+    const macrosOk = data.macros.every((m) => (d.macros || []).some((x) => x.key === m.key && x.sha === m.sha));
+    const cfgOk = d.configRev === data.configRev;
+    const bat = d.battery >= 0 ? `${d.battery}%` : '?';
+    const batCls = d.battery < 0 ? '' : d.battery < 20 ? 'bad' : d.battery < 50 ? 'warn' : 'ok';
+    return `<div class="card">
+      <h2><span>${esc(d.name || d.model || d.id)}</span><small>${esc(d.brand)} ${esc(d.model)} · Android ${esc(d.android)}</small></h2>
+      <div class="id">${esc(d.id)}</div>
+      <div class="row"><span class="k">Visto</span><span class="v ${late ? 'bad' : 'ok'}">${ago(now - d.lastSeen)}${late ? ' · SEM SINAL' : ''}</span></div>
+      <div class="row"><span class="k">Estado</span><span class="v ${stCls}">${stTxt}</span></div>
+      <div class="row"><span class="k">App</span><span class="v">${esc(d.versionName)} (build ${d.versionCode})</span></div>
+      <div class="row"><span class="k">Atualização</span><span class="v ${upCls}">${upTxt}</span></div>
+      <div class="row"><span class="k">Macros</span><span class="v ${macrosOk ? 'ok' : 'warn'}">${macrosOk ? '✅ iguais ao servidor' : '⏳ ainda vai receber'} · ${(d.localMacros || []).length} no celular</span></div>
+      <div class="row"><span class="k">Config</span><span class="v ${cfgOk ? 'ok' : 'warn'}">${cfgOk ? '✅ aplicada' : '⏳ ainda vai aplicar'}</span></div>
+      <div class="row"><span class="k">Bateria</span><span class="v ${batCls}">${bat}</span></div>
+      <div class="row"><span class="k">Tela</span><span class="v">${d.screen ? d.screen.w + '×' + d.screen.h : '?'}</span></div>
+    </div>`;
+  }).join('');
+  $('#foot').textContent = `Atualiza sozinho a cada 10 s · ${list.length} celular(es) · ${new Date(now).toLocaleString('pt-BR')}`;
+}
+
+async function tick() {
+  try {
+    const r = await fetch('/api/devices', { cache: 'no-store' });
+    render(await r.json());
+  } catch (e) {
+    $('#pub').textContent = 'sem resposta do servidor…';
+  }
+}
+tick();
+setInterval(tick, 10000);
+</script>
+</body>
+</html>

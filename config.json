@@ -1,0 +1,18 @@
+{
+  "pollSeconds": 300,
+
+  "selectedMacro": "aquecimento",
+
+  "autorun": {
+    "enabled": false,
+    "macro": "aquecimento",
+    "gapMs": 300000,
+    "quiet": true,
+    "runId": "1"
+  },
+
+  "quietHours": { "start": 21, "end": 9 },
+
+  "devices": {
+  }
+}

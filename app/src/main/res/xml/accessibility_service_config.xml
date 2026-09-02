@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- canRetrieveWindowContent + flagRetrieveInteractiveWindows: necessários pro
+     passo 🔄 achar o botão "Atualizar" no menu do navegador.
+     flagReportViewIds é OBRIGATÓRIA: sem ela getViewIdResourceName() devolve
+     null em TODO nó e a busca por id do botão morre calada (foi o que quebrou
+     a v1.7).
+     NÃO pedir filtro de teclas aqui (canRequestFilterKeyEvents): foi o que
+     impedia o serviço de subir no Redmi/HyperOS na v1.0. -->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:accessibilityFlags="flagDefault|flagRetrieveInteractiveWindows|flagReportViewIds"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="true"
+    android:description="@string/service_description"
+    android:notificationTimeout="100" />

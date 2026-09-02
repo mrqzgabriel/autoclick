@@ -1,0 +1,18 @@
+# build do Android
+.gradle/
+build/
+app/build/
+local.properties
+.idea/
+*.iml
+.kotlin/
+
+# APKs compilados aqui no computador (o servidor compila o dele no deploy)
+*.apk
+apk/
+
+# dados do servidor rodando local
+data/
+node_modules/
+
+.DS_Store
