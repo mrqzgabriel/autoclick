@@ -103,6 +103,7 @@ function render(data) {
     return `<div class="card">
       <h2><span>${esc(d.name || d.model || d.id)}</span><small>${esc(d.brand)} ${esc(d.model)} · Android ${esc(d.android)}</small></h2>
       <div class="id">${esc(d.id)}</div>
+      <div class="row"><span class="k">Chip</span><span class="v ${d.chipPhone ? '' : 'warn'}">${d.chipPhone ? esc(d.chipPhone) + (d.chipPhoneSource === 'config' ? ' <small class="k">(config)</small>' : '') : 'não identificado (abre na 1ª passada)'}</span></div>
       <div class="row"><span class="k">Visto</span><span class="v ${late ? 'bad' : 'ok'}">${ago(now - d.lastSeen)}${late ? ' · SEM SINAL' : ''}</span></div>
       <div class="row"><span class="k">Estado</span><span class="v ${stCls}">${stTxt}</span></div>
       <div class="row"><span class="k">App</span><span class="v">${esc(d.versionName)} (build ${d.versionCode})</span></div>

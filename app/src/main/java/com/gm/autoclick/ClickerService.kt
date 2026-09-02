@@ -172,6 +172,14 @@ class ClickerService : AccessibilityService() {
         // na tela, pra nunca clicar "Fechar/Ignorar" fora de um popup.
         private const val CHROME_DIALOG_ID = "modal_dialog_view"
 
+        // ---------- chip deste celular (v2.1) ----------
+        // A pagina que o macro abre no Chrome e a do AllWin: /gerador/<numero do
+        // chip>. Ler esse numero na tela e o que liga este celular ao card do
+        // chip la no AllWin. Tres fontes, da mais direta a mais frouxa.
+        private val GERADOR_RE = Regex("/gerador/(\\d{10,13})")
+        private val URL_BAR_IDS = setOf("url_bar", "location_bar_edit_text", "url_field")
+        private const val CHIP_PHONE_ID = "chip-phone"
+
         // Teto de cliques de destravamento por passo: se clicar e a tela nao
         // andar, e outra coisa, e insistir a cada meio segundo nao ajuda. 5
         // porque uma passada pode ter dois (wa.me + "Iniciar conversa") mais
@@ -248,6 +256,8 @@ class ClickerService : AccessibilityService() {
     private var recoveries = 0             // quantas vezes se recuperou nesta execucao
     private var waitIsRetry = false        // a espera atual e pos-recuperacao?
     private var unblockTries = 0           // cliques no "Continuar para o chat" neste passo
+    private var chipPhoneCaptured = false  // ja leu o chip na tela nesta passada?
+    private var lastBarLogged = ""         // ultimo texto da barra de endereco logado (evita spam)
 
     // ---------- vigia (watchdog) ----------
     private var nextRunAt = 0L             // uptime em que o proximo tick devia disparar
@@ -894,6 +904,7 @@ class ClickerService : AccessibilityService() {
         recoveries = 0
         waitIsRetry = false
         unblockTries = 0
+        chipPhoneCaptured = false
         // grava pra conseguir retomar se o sistema derrubar o servico
         Store.saveRunState(this, macro.id, intervalBetweenRunsMs, quietWindow)
         Log.i(TAG, "start macro=${macro.name} passos=${macro.steps.size} loops=${macro.loops} fixo=${macro.fixedDelayMs} delay=$delayMs intervalo=${intervalBetweenRunsMs / 1000}s especial=$quietWindow")
@@ -1129,6 +1140,7 @@ class ClickerService : AccessibilityService() {
             // isolada de horas atras ainda estaria encurtando as tentativas.
             offRouteStreak = 0
             guardWaitedMs = 0L
+            chipPhoneCaptured = false
             // Modo intervalo: uma passada feita, agenda a proxima e mostra a contagem.
             if (intervalMs > 0) {
                 waitingGap = true
@@ -1154,6 +1166,16 @@ class ClickerService : AccessibilityService() {
         }
 
         val step = m.steps[stepIndex]
+
+        // ---- chip deste celular: le o numero na pagina do AllWin no Chrome ----
+        // Uma vez por passada, enquanto o navegador estiver na frente. A barra de
+        // endereco vem vazia nos primeiros instantes da navegacao, entao tenta a
+        // cada tick ate conseguir. Fora da guarda de proposito: vale mesmo com a
+        // recuperacao automatica desligada.
+        if (!chipPhoneCaptured) {
+            val f = foregroundPackage()
+            if (isBrowser(f)) captureChipPhone()
+        }
 
         // ---- guarda de rota: so toca se estiver no app certo ----
         // Sem isso, uma tela inesperada (chip banido, popup, aba que o wa.me
@@ -1650,6 +1672,93 @@ class ClickerService : AccessibilityService() {
             }
         }
         return melhor
+    }
+
+    /**
+     * Le o numero do chip na tela do navegador. Do mais direto ao mais frouxo:
+     * (1) barra de endereco (url_bar) com /gerador/<numero>; (2) o elemento
+     * id="chip-phone" que a pagina do AllWin renderiza (o Chrome expoe id HTML
+     * como viewIdResourceName — foi assim que o macro aprendeu o alvo "root");
+     * (3) qualquer no cujo texto contenha /gerador/<numero>.
+     * Sucesso marca a passada como lida; falha NAO apaga o valor anterior.
+     */
+    private fun captureChipPhone() {
+        try {
+            val roots = activeRoots()
+            var digits = ""
+            var source = ""
+
+            // 1) barra de endereco do navegador
+            val bar = findFirst(roots) { n ->
+                (n.viewIdResourceName ?: "").substringAfterLast('/') in URL_BAR_IDS
+            }
+            val barText = bar?.text?.toString() ?: ""
+            GERADOR_RE.find(barText)?.let {
+                digits = it.groupValues[1]
+                source = "url_bar"
+            }
+
+            // 2) elemento da propria pagina (sem filtrar visibilidade: pode estar
+            //    fora da area visivel e ainda assim na arvore)
+            if (digits.isEmpty()) {
+                val el = findFirst(roots) { n ->
+                    (n.viewIdResourceName ?: "").substringAfterLast('/') == CHIP_PHONE_ID
+                }
+                if (el != null) {
+                    val d = nodeText(el).filter { c -> c.isDigit() }
+                    if (d.length in 10..13) {
+                        digits = d
+                        source = "chip-phone"
+                    }
+                }
+            }
+
+            // 3) qualquer texto na tela com /gerador/<numero>
+            if (digits.isEmpty()) {
+                val any = findFirst(roots) { n ->
+                    GERADOR_RE.containsMatchIn(n.text?.toString() ?: "")
+                }
+                any?.text?.toString()?.let { t -> GERADOR_RE.find(t) }?.let {
+                    digits = it.groupValues[1]
+                    source = "texto"
+                }
+            }
+
+            if (digits.isEmpty()) {
+                // diagnostico: o que a barra mostrava (uma vez por texto diferente)
+                if (barText.isNotEmpty() && barText != lastBarLogged) {
+                    lastBarLogged = barText
+                    Log.i(TAG, "chip: barra de endereco ainda sem /gerador: ${barText.take(100)}")
+                }
+                return
+            }
+            chipPhoneCaptured = true
+            Log.i(TAG, "chip desta passada: $digits ($source)")
+            Sync.setChipPhone(this, digits)
+        } catch (t: Throwable) {
+            Log.e(TAG, "falha lendo o chip na tela", t)
+        }
+    }
+
+    /**
+     * Texto do no ou, se vazio, o primeiro texto entre os descendentes: o Chrome
+     * costuma por o texto de um <div> num filho.
+     */
+    private fun nodeText(n: AccessibilityNodeInfo): String {
+        (n.text ?: n.contentDescription)?.toString()?.trim()?.let { if (it.isNotEmpty()) return it }
+        val queue = ArrayDeque<AccessibilityNodeInfo>()
+        for (i in 0 until n.childCount) n.getChild(i)?.let { queue.add(it) }
+        var seen = 0
+        while (queue.isNotEmpty() && seen < 50) {
+            val c = queue.removeFirst()
+            seen++
+            try {
+                (c.text ?: c.contentDescription)?.toString()?.trim()?.let { if (it.isNotEmpty()) return it }
+                for (i in 0 until c.childCount) c.getChild(i)?.let { queue.add(it) }
+            } catch (_: Throwable) {
+            }
+        }
+        return ""
     }
 
     /** Esse elemento esta visivel na tela da FRENTE agora? */

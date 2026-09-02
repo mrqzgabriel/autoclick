@@ -109,7 +109,7 @@ situação da atualização.
 
 ```json
 {
-  "pollSeconds": 300,                 // de quanto em quanto tempo o celular fala com o servidor (mín. 60)
+  "pollSeconds": 120,                 // de quanto em quanto tempo o celular fala com o servidor (mín. 60)
   "selectedMacro": "aquecimento",     // macro que fica na bolha (chave = nome do arquivo em macros/)
   "autorun": {
     "enabled": true,                  // true = todo celular começa este macro; false = não mexe em ninguém
@@ -123,6 +123,7 @@ situação da atualização.
   "devices": {
     "ID-DO-CELULAR": {                // ID: botão "Copiar ID" no app, ou no painel
       "name": "Redmi 1 (Rosilene)",   // nome que aparece no painel
+      "chipPhone": "11958193140",     // opcional: força o chip deste celular (ele detecta sozinho lendo a página do AllWin)
       "macros": ["aquecimento"],      // só estes macros vão pra ele (sem esta linha vão todos)
       "autorun": { "enabled": true, "macro": "aquecimento", "gapMs": 600000, "quiet": true, "runId": "1" }
     }
@@ -135,6 +136,11 @@ situação da atualização.
   parado até você mudar algo aqui (o `runId`, por exemplo). O repositório vem
   com `enabled: false` de propósito: um deploy nunca começa envios sozinho;
   quem já estava rodando continua. Pra parar todo mundo, use o `command` `stop`.
+- **Chip do celular**: a cada passada o app lê, na página do AllWin aberta no Chrome
+  (`/gerador/<número>`), qual chip aquele celular opera, e manda no relatório
+  (`chipPhone`). É isso que liga o celular ao card do número no AllWin. Aparece no painel
+  como "Chip". Se um celular não detectar (página diferente, Chrome sem barra), dá pra
+  forçar com `devices[id].chipPhone` no config.json, ou vincular à mão no AllWin.
 - `command.action`: `restart` (recomeça), `stop` (para), `relearn` (esquece a
   rota aprendida e recomeça; use quando a rota foi aprendida com a tela errada),
   `home` (tela inicial). Cada `id` roda uma única vez em cada celular.

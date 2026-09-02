@@ -1,5 +1,5 @@
 {
-  "pollSeconds": 300,
+  "pollSeconds": 120,
 
   "selectedMacro": "aquecimento",
 

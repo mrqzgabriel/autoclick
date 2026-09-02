@@ -53,6 +53,9 @@ object Sync {
     private const val KEY_DEVICE_NAME = "device_name"
     private const val KEY_CONFIG_REV = "config_rev"
     private const val KEY_SELECTED_KEY = "selected_key"
+    // Numero do chip que este celular opera, lido da pagina do AllWin no Chrome
+    private const val KEY_CHIP_PHONE = "chip_phone"
+    private const val KEY_CHIP_PHONE_AT = "chip_phone_at"
 
     const val DEFAULT_POLL_S = 300
     private const val MIN_POLL_S = 60
@@ -104,6 +107,27 @@ object Sync {
     }
 
     fun deviceName(ctx: Context): String = prefs(ctx).getString(KEY_DEVICE_NAME, "") ?: ""
+
+    /** Chip que este celular opera (so digitos). "" = ainda nao foi lido na tela. */
+    fun chipPhone(ctx: Context): String = prefs(ctx).getString(KEY_CHIP_PHONE, "") ?: ""
+
+    /**
+     * Guarda o chip lido na tela do navegador. So grava (e avisa o servidor em
+     * seguida) quando o valor MUDA: o mesmo numero toda passada nao gera escrita
+     * nem trafego. Chamar da main thread (vem do tick do servico).
+     */
+    fun setChipPhone(ctx: Context, digits: String) {
+        val clean = digits.filter { it.isDigit() }.take(20)
+        if (clean.length < 10) return
+        val p = prefs(ctx)
+        if ((p.getString(KEY_CHIP_PHONE, "") ?: "") == clean) return
+        p.edit()
+            .putString(KEY_CHIP_PHONE, clean)
+            .putLong(KEY_CHIP_PHONE_AT, System.currentTimeMillis())
+            .apply()
+        Log.i(TAG, "chip deste celular: $clean")
+        syncSoon(ctx.applicationContext)
+    }
 
     fun pollSeconds(ctx: Context): Int =
         prefs(ctx).getInt(KEY_POLL, DEFAULT_POLL_S).coerceIn(MIN_POLL_S, MAX_POLL_S)
@@ -315,6 +339,8 @@ object Sync {
         return JSONObject()
             .put("id", deviceId(ctx))
             .put("name", deviceName(ctx))
+            .put("chipPhone", p.getString(KEY_CHIP_PHONE, "") ?: "")
+            .put("chipPhoneAt", p.getLong(KEY_CHIP_PHONE_AT, 0L))
             .put("model", Build.MODEL)
             .put("brand", Build.BRAND)
             .put("android", Build.VERSION.RELEASE)

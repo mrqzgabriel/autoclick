@@ -239,7 +239,9 @@ class MainActivity : AppCompatActivity() {
         }
         serverInfo.text = sb
         val name = Sync.deviceName(this)
-        deviceIdView.text = "Este celular: ${if (name.isNotEmpty()) "$name · " else ""}${Sync.deviceId(this)}"
+        val chip = Sync.chipPhone(this)
+        deviceIdView.text = "Este celular: ${if (name.isNotEmpty()) "$name · " else ""}${Sync.deviceId(this)}" +
+            "\nChip detectado: ${chip.ifEmpty { "ainda não (lê na 1ª passada do macro)" }}"
         btnInstall.visibility = if (Updater.pendingUserIntent != null) View.VISIBLE else View.GONE
         btnAllowInstall.visibility = if (Updater.canInstall(this)) View.GONE else View.VISIBLE
     }

@@ -118,7 +118,10 @@ function manifestFor(deviceId) {
   const merged = { ...cfg };
   delete merged.devices;
   for (const [k, v] of Object.entries(perDevice)) {
-    if (k === 'name' || k === 'macros') continue;
+    // name/chipPhone sao identidade do aparelho, nao config: fora do merge, senao
+    // o configRev desse celular nunca bate com o geral e o painel diz
+    // "ainda vai aplicar" pra sempre.
+    if (k === 'name' || k === 'macros' || k === 'chipPhone') continue;
     merged[k] = v;
   }
   const allow = Array.isArray(perDevice.macros) ? perDevice.macros : null;
@@ -130,7 +133,7 @@ function manifestFor(deviceId) {
     config: merged,
     configRev: sha256(JSON.stringify(merged)).slice(0, 16),
     macros: macros.map((m) => ({ key: m.key, sha: m.sha, envelope: m.envelope })),
-    device: { name: perDevice.name || '' },
+    device: { name: perDevice.name || '', chipPhone: digits(perDevice.chipPhone) },
   };
 }
 
@@ -156,15 +159,27 @@ function saveDevicesSoon() {
 }
 
 const str = (v, max = 120) => (v == null ? '' : String(v)).slice(0, max);
+// Numero do chip: so digitos (o celular manda limpo, mas o config.json pode vir formatado).
+const digits = (v) => String(v == null ? '' : v).replace(/\D/g, '').slice(0, 20);
 
 function recordDevice(report, ip) {
   const id = str(report.id, 64);
   if (!id) return null;
   const cfg = loadConfig();
   const named = cfg.devices && cfg.devices[id] && cfg.devices[id].name;
+  // Chip que este celular opera: override do config.json > o que o celular leu na
+  // tela > o valor anterior (um relatorio sem o campo, ex. app antigo, nao apaga).
+  // `devices[id]` aqui ainda e o registro ANTERIOR (so e trocado no fim), igual ao
+  // truque do firstSeen.
+  const prev = devices[id] || {};
+  const chipCfg = digits(cfg.devices && cfg.devices[id] && cfg.devices[id].chipPhone);
+  const chipRep = digits(report.chipPhone);
   const d = {
     id,
     name: str(named || report.name, 60),
+    chipPhone: chipCfg || chipRep || prev.chipPhone || '',
+    chipPhoneAt: chipRep ? (Number(report.chipPhoneAt) || Date.now()) : (prev.chipPhoneAt || 0),
+    chipPhoneSource: chipCfg ? 'config' : chipRep ? 'report' : (prev.chipPhoneSource || ''),
     model: str(report.model, 40),
     brand: str(report.brand, 40),
     android: str(report.android, 20),
@@ -297,7 +312,7 @@ const server = http.createServer(async (req, res) => {
       const d = recordDevice(report, clientIp(req));
       if (!d) return send(res, 400, { ok: false, error: 'relatório sem id' });
       const st = d.state || {};
-      console.log(`[sync] ${d.name || d.model} (${d.id.slice(0, 8)}) v${d.versionName}/${d.versionCode} serviço=${d.service ? 'on' : 'OFF'} ${st.playing ? 'rodando ' + (st.macro || '') : 'parado'} bat=${d.battery}%`);
+      console.log(`[sync] ${d.name || d.model} (${d.id.slice(0, 8)}) chip=${d.chipPhone || '-'} v${d.versionName}/${d.versionCode} serviço=${d.service ? 'on' : 'OFF'} ${st.playing ? 'rodando ' + (st.macro || '') : 'parado'} bat=${d.battery}%`);
       return send(res, 200, manifestFor(d.id));
     }
 
