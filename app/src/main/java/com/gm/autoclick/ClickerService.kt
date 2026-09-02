@@ -132,7 +132,22 @@ class ClickerService : AccessibilityService() {
         // aparece pra numero fora dos contatos ("Você confia nesta pessoa?").
         private val START_CHAT_LABELS = listOf(
             "Iniciar conversa", "Começar conversa", "Iniciar bate-papo",
-            "Start chat", "Start conversation"
+            "Continuar conversa", "Continuar", "Iniciar", "Sim, confio", "Confiar",
+            "Start chat", "Start conversation", "Continue", "Trust", "Yes"
+        )
+
+        // Nunca clicar nestes no dialogo do WhatsApp, mesmo que o id bata: sao
+        // os botoes de desistir/bloquear/denunciar. Trava de seguranca.
+        private val WA_DANGER_WORDS = listOf(
+            "cancel", "bloque", "block", "denunc", "report", "exclu", "delet",
+            "apagar", "remov", "sair", "leave", "não", "nao", "not now", "no "
+        )
+
+        // Palavras que um botao de SEGUIR ADIANTE contem (portugues/ingles).
+        // Usadas junto do id primary_button quando o texto exato mudou de
+        // versao pra versao do WhatsApp.
+        private val WA_GO_WORDS = listOf(
+            "convers", "chat", "continu", "inici", "confi", "start", "ok", "sim", "yes"
         )
 
         // ---------- popups do proprio navegador ----------
@@ -1191,6 +1206,17 @@ class ClickerService : AccessibilityService() {
                         step.anchor = id
                         Store.update(this, m)
                         Log.i(TAG, "rota aprendida: passo ${stepIndex + 1} alvo=$id")
+                    } else if (front.contains("whatsapp", true)) {
+                        // No WhatsApp TODO botao tem id. Nada embaixo do toque =
+                        // a conversa ainda nao abriu, ou tem um dialogo por cima
+                        // que nao reconhecemos. Tocar no escuro aqui "completa"
+                        // a passada sem enviar nada (visto em 02/09): espera, e
+                        // se nao aparecer, recupera. O log mostra o que havia na
+                        // tela pra gente aprender o dialogo novo.
+                        if (keepWaiting("whatsapp sem alvo embaixo do toque")) return
+                        logVisibleNodes("whatsapp/sem-alvo")
+                        onOffRoute(step, "$front sem alvo embaixo do toque")
+                        return
                     }
                 } else if (!hasNodeWithId(step.anchor)) {
                     // (a tela intermediaria "Iniciar conversa" ja foi tratada no
@@ -1678,8 +1704,18 @@ class ClickerService : AccessibilityService() {
         if (!n.isVisibleToUser) return false
         val label = (n.text ?: n.contentDescription ?: return false).toString().trim()
         if (label.isEmpty() || label.length > 30) return false
-        if (label.contains("cancel", true)) return false // trava: nunca cancelar
-        return START_CHAT_LABELS.any { label.equals(it, true) }
+        val low = label.lowercase()
+        // trava: nunca cancelar / bloquear / denunciar, nem que o id bata
+        if (WA_DANGER_WORDS.any { low.contains(it) }) return false
+        if (START_CHAT_LABELS.any { label.equals(it, true) }) return true
+        // Plano B, independente do texto: o botao de seguir do dialogo
+        // "Você confia nesta pessoa?" e o primary_button (confirmado por dump).
+        // O WhatsApp muda o texto entre versoes (atualiza pela Play Store), e
+        // um texto que nao bate deixava o macro tocando no escuro. Exige que o
+        // texto pareca "seguir adiante", pra nao clicar o primary de outro
+        // dialogo qualquer (ex: "Fazer backup").
+        val id = (n.viewIdResourceName ?: "").substringAfterLast('/')
+        return id == "primary_button" && WA_GO_WORDS.any { low.contains(it) }
     }
 
     /**
@@ -1727,6 +1763,9 @@ class ClickerService : AccessibilityService() {
             "FORA DE ROTA no passo ${stepIndex + 1}: esperava ${step.app}, achei " +
                 "${found.ifBlank { "nada" }} (seguidas=$offRouteStreak total=$recoveries)"
         )
+        // Dentro do WhatsApp, anota o que estava na tela: e assim que se descobre
+        // o texto de um dialogo novo sem precisar do cabo.
+        if (found.contains("whatsapp", true)) logVisibleNodes("whatsapp/fora-de-rota")
         toast("Saí da rota. Limpando o navegador e voltando pro início.")
         recovering = true
         recoverStartUptime = SystemClock.uptimeMillis()
