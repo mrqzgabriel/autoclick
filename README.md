@@ -45,19 +45,23 @@ relatório (versão, macro rodando, bateria) e recebe três coisas:
 3. **Build → Dockerfile** (caminho `Dockerfile`, o padrão).
 4. **Domains**: adicione um domínio (o do EasyPanel serve, ex.
    `autoclick-xxxx.easypanel.host`), **porta 3000**, HTTPS ligado.
-5. **Environment** (opcional, mas recomendado):
-   - `SERVER_URL` = o endereço do passo 4, ex. `https://autoclick-xxxx.easypanel.host`
-     (fica gravado dentro do APK: um celular novo já nasce sabendo o servidor)
-   - `SYNC_TOKEN` = uma senha qualquer (o app manda em cada pedido; o painel
-     continua público)
+5. **Endereço e token**: edite `gradle.properties` no repositório e faça
+   commit (é a forma mais simples e que nunca dá conflito, porque esses dois
+   valores precisam ficar gravados dentro do APK no build):
+   - `autoclick.serverUrl=https://autoclick-xxxx.easypanel.host` (o endereço do
+     passo 4; assim um celular novo já nasce sabendo onde sincronizar)
+   - `autoclick.syncToken=algumaSenha` (opcional; o app manda em cada pedido e o
+     servidor recusa quem não mandar. O painel continua aberto.)
 6. **Mounts** (opcional): volume em `/app/data` pra lista de celulares
    sobreviver ao deploy. Sem isso eles reaparecem sozinhos em 5 min.
 7. **Deploy**. O primeiro build demora (baixa o SDK do Android, uns 5 a 10
    min). Os seguintes usam o cache e levam 1 a 3 min.
 8. Abra o domínio: o **painel** mostra a versão publicada e cada celular.
 
-Se preferir não usar a variável `SERVER_URL`, coloque o endereço em
-`gradle.properties` (`autoclick.serverUrl=`) e faça deploy de novo.
+> As variáveis de ambiente `SERVER_URL`/`SYNC_TOKEN` do EasyPanel também
+> funcionam, mas só se o EasyPanel as repassar como *build args* — e o token
+> precisa ser o **mesmo** no build (APK) e no runtime (servidor). Por isso o
+> caminho recomendado é `gradle.properties`, que vale pros dois de uma vez.
 
 ## 2. Primeira instalação em cada celular (uma vez, pelo cabo)
 
@@ -141,8 +145,9 @@ situação da atualização.
 
 - `GET /` painel · `GET /api/devices` JSON do painel · `GET /apk/AutoClick.apk` APK
 - `POST /api/sync` (o app usa) · `GET /api/manifest?id=...` o que um celular receberia
-- Se `SYNC_TOKEN` estiver definido, `/api/sync` e `/api/manifest` exigem o
-  cabeçalho `X-Token`.
+- Se houver token (`autoclick.syncToken` no `gradle.properties`, ou a env
+  `SYNC_TOKEN`), `/api/sync` e `/api/manifest` exigem o cabeçalho `X-Token`. O
+  APK é compilado com o mesmo valor, então os celulares mandam sozinhos.
 
 ## 6. Rodar tudo aqui no computador (teste)
 
