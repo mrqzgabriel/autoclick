@@ -94,7 +94,11 @@ COPY --from=apk /out /app/apk
 RUN mkdir -p /app/data
 
 EXPOSE 3000
-HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:3000/health > /dev/null || exit 1
+# O EasyPanel injeta a variável PORT (aqui 80, igual ao alvo do domínio) e o
+# servidor obedece. O healthcheck precisa checar ESSA porta, não a 3000 fixa,
+# senão o container é marcado "não saudável", o proxy para de rotear e a página
+# responde 502 "Service is not reachable". ${PORT:-3000} expande em runtime.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 \
+  CMD wget -qO- "http://127.0.0.1:${PORT:-3000}/health" > /dev/null || exit 1
 
 CMD ["node", "server/index.js"]
