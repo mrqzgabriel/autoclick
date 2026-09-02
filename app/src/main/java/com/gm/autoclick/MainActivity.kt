@@ -402,7 +402,10 @@ class MainActivity : AppCompatActivity() {
                 // pode ter reiniciado o serviço e a instância velha falha calada.
                 val s = ClickerService.instance ?: return@setItems needService()
                 Store.setSelected(this, m.id)
-                s.start(m, 5000, intervals[which], quietWindow = which == 4)
+                // tela inicial antes de começar, pra o passo 1 aprender a rota
+                // certa (senão aprende o app que estiver na frente)
+                s.goHomeNow()
+                s.start(m, 3000, intervals[which], quietWindow = which == 4)
                 toast(
                     if (which == 0) "Começa em 5 segundos: abra o app agora"
                     else "Começa em 5 s, roda 1x e repete ${options[which].lowercase()}"

@@ -383,7 +383,11 @@ class ClickerService : AccessibilityService() {
             chooserOpen = false
             updateBubble()
             val m = Store.selected(this) ?: return@glyph toast("Grave um macro primeiro")
-            start(m, 300, gapMs)
+            // Vai pra tela inicial ANTES de começar: senão, se a bolha for
+            // apertada com o Chrome (ou outro app) na frente, o passo 1 aprende
+            // esse app em vez da tela inicial e o macro trava fora de rota.
+            goHomeNow()
+            start(m, 3000, gapMs)
         }.apply { setTextColor(color) }
         chooser.addView(option("já", 0L, 0xFF7CD67C.toInt()))
         // 30 s: opção curta pra testar sem esperar 5 minutos por passada
@@ -395,7 +399,8 @@ class ClickerService : AccessibilityService() {
             chooserOpen = false
             updateBubble()
             val m = Store.selected(this) ?: return@glyph toast("Grave um macro primeiro")
-            start(m, 300, 5 * 60_000L, quietWindow = true)
+            goHomeNow()
+            start(m, 3000, 5 * 60_000L, quietWindow = true)
         }.apply { setTextColor(0xFFFFC107.toInt()) })
         chooser.addView(glyph("✕", 13f) {
             chooserOpen = false
