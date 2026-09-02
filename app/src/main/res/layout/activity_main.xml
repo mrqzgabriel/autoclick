@@ -51,6 +51,20 @@
             android:textSize="14sp"
             android:textStyle="bold" />
 
+        <!-- Atualização do app: só aparece quando o servidor publicou uma versão
+             mais nova. No HyperOS a instalação silenciosa é barrada, então é
+             aqui que se dá o toque que falta. -->
+        <com.google.android.material.button.MaterialButton
+            android:id="@+id/btnUpdateApp"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:minHeight="52dp"
+            android:text="Atualizar app"
+            android:textSize="15sp"
+            android:visibility="gone"
+            app:backgroundTint="#D97706" />
+
         <!-- Ação primária -->
         <com.google.android.material.button.MaterialButton
             android:id="@+id/btnRecord"
@@ -108,14 +122,6 @@
                     android:layout_marginTop="4dp"
                     android:textColor="?android:attr/textColorSecondary"
                     android:textSize="12sp" />
-
-                <com.google.android.material.button.MaterialButton
-                    android:id="@+id/btnInstallUpdate"
-                    android:layout_width="match_parent"
-                    android:layout_height="wrap_content"
-                    android:layout_marginTop="8dp"
-                    android:text="Instalar atualização"
-                    android:visibility="gone" />
 
                 <com.google.android.material.button.MaterialButton
                     android:id="@+id/btnAllowInstall"

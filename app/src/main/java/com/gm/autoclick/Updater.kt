@@ -51,6 +51,20 @@ object Updater {
     @Volatile var error = ""
     @Volatile var pendingUserIntent: Intent? = null
 
+    // A caixa de confirmacao pendente ja foi aberta sozinha pela tela? (uma vez
+    // por atualizacao; o botao "Atualizar" reabre quantas vezes for preciso)
+    @Volatile var pendingShownAuto = false
+
+    // Ultimo bloco "app" que o servidor mandou (versao publicada) e de onde
+    // veio: e o que o botao "Atualizar" da tela usa pra saber se ha versao nova
+    // sem esperar a proxima sincronizacao.
+    @Volatile private var lastApp: JSONObject? = null
+    @Volatile private var lastServerUrl = ""
+
+    // O usuario apertou "Atualizar": pula a espera por momento seguro e abre a
+    // caixa do sistema assim que ela existir, mesmo com o macro rodando.
+    @Volatile private var userRequested = false
+
     @Volatile private var busy = false
     private var lastFailAt = 0L
     private var failures = 0
@@ -100,10 +114,57 @@ object Updater {
     /**
      * Chamado pela sincronização (main thread) com o bloco "app" do manifesto.
      */
+    /** versionCode publicado no servidor, se for maior que o instalado; senao 0. */
+    fun availableCode(): Int {
+        val code = lastApp?.optInt("versionCode", 0) ?: 0
+        return if (code > BuildConfig.VERSION_CODE) code else 0
+    }
+
+    fun availableName(): String = lastApp?.optString("versionName", "") ?: ""
+
+    /**
+     * Botao "Atualizar" da tela. O usuario pediu, entao vai ate o fim: se a
+     * caixa do sistema ja esta pronta, abre; se so falta baixar, baixa e abre;
+     * se nao ha versao nova, diz isso. Mensagens vao pro toast da tela.
+     */
+    fun installNow(ctx: Context, say: (String) -> Unit) {
+        if (pendingUserIntent != null) {
+            if (!showPending(ctx)) say("Não deu pra abrir a caixa de instalação. Tente de novo.")
+            return
+        }
+        val code = availableCode()
+        if (code == 0) {
+            say("Já está na versão mais nova (${BuildConfig.VERSION_NAME}).")
+            return
+        }
+        if (busy) {
+            when (status) {
+                "downloading" -> say("Baixando a atualização…")
+                // baixada, esperando a passada acabar: o toque pula a espera
+                "waiting" -> {
+                    userRequested = true
+                    say("Instalando em instantes…")
+                }
+                else -> say("Instalando…")
+            }
+            return
+        }
+        userRequested = true
+        // libera a nova tentativa mesmo dentro da janela de 30 min pos-falha
+        lastFailAt = 0L
+        status = "idle"
+        say("Baixando a versão ${availableName()}…")
+        check(ctx, lastApp, lastServerUrl, null)
+    }
+
     fun check(ctx: Context, app: JSONObject?, serverUrl: String, opts: JSONObject? = null) {
         if (opts != null) {
             optSilent = opts.optBoolean("silent", true)
             optSource = opts.optString("packageSource", "store").lowercase()
+        }
+        if (app != null) {
+            lastApp = app
+            lastServerUrl = serverUrl
         }
         if (app == null) return
         val code = app.optInt("versionCode", 0)
@@ -216,7 +277,9 @@ object Updater {
      */
     private fun installWhenSafe(ctx: Context, file: File, code: Int, waited: Long) {
         val s = ClickerService.instance
-        val safe = s == null || s.safeToUpdate()
+        // pedido pelo botao: nao espera a passada terminar (a recuperacao de rota
+        // resolve o que sobrar)
+        val safe = userRequested || s == null || s.safeToUpdate()
         if (!safe && waited < SAFE_MAX_WAIT_MS) {
             status = "waiting"
             handler.postDelayed({ installWhenSafe(ctx, file, code, waited + SAFE_POLL_MS) }, SAFE_POLL_MS)
@@ -289,6 +352,7 @@ object Updater {
 
     private fun fail(msg: String) {
         busy = false
+        userRequested = false
         status = "failed"
         error = msg
         failures++
@@ -304,14 +368,18 @@ object Updater {
                 busy = false
                 status = "needs_user"
                 pendingUserIntent = confirm?.apply { addFlags(Intent.FLAG_ACTIVITY_NEW_TASK) }
+                pendingShownAuto = false
                 // Com o macro rodando, a caixa de confirmação por cima da tela
                 // derrubaria a rota. Parado, pode aparecer: quem pegar o celular
-                // só precisa tocar em Instalar.
-                if (ClickerService.instance?.playing != true) showPending(ctx)
+                // só precisa tocar em Instalar. Se foi o botao "Atualizar" que
+                // pediu, abre de qualquer jeito: a pessoa esta com o celular na mao.
+                if (userRequested || ClickerService.instance?.playing != true) showPending(ctx)
+                userRequested = false
             }
             PackageInstaller.STATUS_SUCCESS -> {
                 busy = false
                 status = "done"
+                userRequested = false
                 pendingUserIntent = null
                 try {
                     updateDir(ctx).listFiles()?.forEach { it.delete() }

@@ -29,7 +29,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var empty: TextView
     private lateinit var serverInfo: TextView
     private lateinit var deviceIdView: TextView
-    private lateinit var btnInstall: Button
+    private lateinit var btnUpdate: Button
     private lateinit var btnAllowInstall: Button
 
     private val importLauncher =
@@ -84,8 +84,13 @@ class MainActivity : AppCompatActivity() {
         // ---- card do servidor (VPS): sincronizacao e atualizacao do app ----
         serverInfo = findViewById(R.id.tvServerInfo)
         deviceIdView = findViewById(R.id.tvDeviceId)
-        btnInstall = findViewById(R.id.btnInstallUpdate)
+        btnUpdate = findViewById(R.id.btnUpdateApp)
         btnAllowInstall = findViewById(R.id.btnAllowInstall)
+        // Botao "Atualizar": baixa (se precisar) e abre a caixa do sistema
+        btnUpdate.setOnClickListener {
+            Updater.installNow(this) { msg -> toast(msg) }
+            refreshStatus()
+        }
         findViewById<Button>(R.id.btnSync).setOnClickListener {
             Sync.runNow(this, "botão") { ok, msg ->
                 toast(if (ok) "Sincronizado: $msg" else "Não sincronizou: $msg")
@@ -95,9 +100,6 @@ class MainActivity : AppCompatActivity() {
         }
         findViewById<Button>(R.id.btnCopyId).setOnClickListener { copyDeviceId() }
         findViewById<Button>(R.id.btnServer).setOnClickListener { serverDialog() }
-        btnInstall.setOnClickListener {
-            if (!Updater.showPending(this)) toast("Não deu pra abrir a instalação")
-        }
         btnAllowInstall.setOnClickListener {
             try {
                 startActivity(
@@ -193,6 +195,13 @@ class MainActivity : AppCompatActivity() {
         Sync.listener = { if (!isFinishing && !isDestroyed) refresh() }
         Sync.syncSoon(this)
         refresh()
+        // Atualizacao baixada esperando o toque: abre a caixa do sistema sozinha
+        // ao entrar no app (uma vez por atualizacao). E o passo manual que o
+        // HyperOS exige, reduzido a tocar em "Atualizar".
+        if (Updater.pendingUserIntent != null && !Updater.pendingShownAuto) {
+            Updater.pendingShownAuto = true
+            handler.postDelayed({ if (!isFinishing) Updater.showPending(this) }, 400)
+        }
         // O serviço pode ligar/religar com a tela já aberta (o usuário liga em
         // Acessibilidade, ou o HyperOS mata e o Android reconecta). Sem esse
         // poll a pílula fica mentindo até sair e voltar no app.
@@ -242,7 +251,17 @@ class MainActivity : AppCompatActivity() {
         val chip = Sync.chipPhone(this)
         deviceIdView.text = "Este celular: ${if (name.isNotEmpty()) "$name · " else ""}${Sync.deviceId(this)}" +
             "\nChip detectado: ${chip.ifEmpty { "ainda não (lê na 1ª passada do macro)" }}"
-        btnInstall.visibility = if (Updater.pendingUserIntent != null) View.VISIBLE else View.GONE
+        // Botao de atualizar: some quando nao ha versao nova; o texto acompanha a fase
+        val avail = Updater.availableCode()
+        val pending = Updater.pendingUserIntent != null
+        btnUpdate.visibility = if (avail > 0 || pending) View.VISIBLE else View.GONE
+        btnUpdate.text = when {
+            Updater.status == "downloading" -> "Baixando a atualização…"
+            Updater.status == "waiting" -> "Instalar a atualização agora"
+            Updater.status == "installing" -> "Instalando…"
+            pending -> "Instalar a atualização ${Updater.availableName().ifEmpty { "" }}".trim()
+            else -> "Atualizar o AutoClick para ${Updater.availableName()}".trim()
+        }
         btnAllowInstall.visibility = if (Updater.canInstall(this)) View.GONE else View.VISIBLE
     }
 
