@@ -1,0 +1,1 @@
+{"app":"autoclick","ver":1,"screen":{"w":720,"h":1600},"macro":{"id":"teste-1","name":"teste","loops":0,"loopDelay":800,"fixedDelay":0,"speed":1,"guide":"","steps":[{"type":"tap","pts":[[360,800]],"dur":60,"delay":0,"app":"","anchor":""}]}}
