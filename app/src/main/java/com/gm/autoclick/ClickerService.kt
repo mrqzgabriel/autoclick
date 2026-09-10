@@ -1272,6 +1272,24 @@ class ClickerService : AccessibilityService() {
                         // tela pra gente aprender o dialogo novo.
                         if (keepWaiting("whatsapp sem alvo embaixo do toque")) return
                         logVisibleNodes("whatsapp/sem-alvo")
+                        // Antes de desistir: o botao pode ter so SUBIDO. Quando
+                        // chega mensagem nao lida de numero fora dos contatos, o
+                        // WhatsApp enfia o painel BLOQUEAR/ADICIONAR e empurra a
+                        // barra de digitacao pra cima — o toque cai no vazio e o
+                        // passo nunca aprende o alvo, entao a correcao de clicar
+                        // no no (que precisa da ancora) tambem nunca entra. Sem
+                        // isto, o celular fica preso nesse laco pra sempre: foi
+                        // o que segurou o chip 11984953915 em 10/09.
+                        val perto = nearestClickableId(step.pts[0])
+                        if (perto.isNotBlank()) {
+                            step.anchor = perto
+                            Store.update(this, m)
+                            Log.i(TAG, "rota aprendida: passo ${stepIndex + 1} alvo=$perto (botão saiu do lugar)")
+                            guardWaitedMs = 0L
+                            unblockTries = 0
+                            scheduleRunner(GUARD_POLL_MS)
+                            return
+                        }
                         onOffRoute(step, "$front sem alvo embaixo do toque")
                         return
                     }
@@ -1812,6 +1830,57 @@ class ClickerService : AccessibilityService() {
             }
         }
         return ""
+    }
+
+    /**
+     * Id do botao clicavel mais perto do ponto do toque, quando o proprio ponto
+     * nao cobre nada com id. So vale pra perto MESMO (um quarto da largura da
+     * tela): a ideia e reencontrar o botao que subiu ou desceu com uma faixa
+     * nova na tela, nao cacar qualquer coisa clicavel.
+     *
+     * Devolve "" quando nada perto serve — e ai o passo trata como fora de rota,
+     * como antes.
+     */
+    private fun nearestClickableId(spot: Pt): String {
+        val size = displaySize()
+        val limite = size.x / 4f
+        val tela = size.x.toLong() * size.y.toLong()
+        if (tela <= 0L) return ""
+        val rect = Rect()
+        var melhorId = ""
+        var melhorDist = Float.MAX_VALUE
+        for (root in activeRoots()) {
+            val fila = ArrayDeque<AccessibilityNodeInfo>()
+            fila.add(root)
+            var vistos = 0
+            while (fila.isNotEmpty() && vistos < 1500) {
+                val n = fila.removeFirst()
+                vistos++
+                try {
+                    val id = (n.viewIdResourceName ?: "").substringAfterLast('/')
+                    if (id.isNotBlank() && n.isVisibleToUser && n.isClickable) {
+                        n.getBoundsInScreen(rect)
+                        val area = rect.width().toLong() * rect.height().toLong()
+                        // mesma trava do clique por no: botao, nao painel
+                        if (area in 1 until (tela * MAX_ANCHOR_SCREEN_PCT / 100)) {
+                            val dx = spot.x - rect.exactCenterX()
+                            val dy = spot.y - rect.exactCenterY()
+                            val dist = kotlin.math.sqrt(dx * dx + dy * dy)
+                            if (dist < limite && dist < melhorDist) {
+                                melhorDist = dist
+                                melhorId = id
+                            }
+                        }
+                    }
+                    for (i in 0 until n.childCount) n.getChild(i)?.let { fila.add(it) }
+                } catch (_: Throwable) {
+                }
+            }
+        }
+        if (melhorId.isNotBlank()) {
+            Log.i(TAG, "botão mais perto do toque: \"$melhorId\" a ${melhorDist.toInt()}px")
+        }
+        return melhorId
     }
 
     /** App que o passo ANTERIOR espera, ou "" no primeiro passo da passada. */
