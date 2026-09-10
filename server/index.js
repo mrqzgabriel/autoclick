@@ -124,6 +124,14 @@ function manifestFor(deviceId) {
     if (k === 'name' || k === 'macros' || k === 'chipPhone') continue;
     merged[k] = v;
   }
+  // Comando pendente pra este celular entra no config que ele recebe. Fica FORA
+  // do que assina o configRev: o comando e efemero e sai da fila assim que o
+  // celular confirma — se entrasse no hash, o rev de todo mundo dancaria a cada
+  // clique e o painel diria "ainda vai aplicar" sem motivo.
+  const rev = sha256(JSON.stringify(merged)).slice(0, 16);
+  const cmd = deviceId ? commandFor(deviceId) : null;
+  if (cmd) merged.command = { id: cmd.id, action: cmd.action };
+
   const allow = Array.isArray(perDevice.macros) ? perDevice.macros : null;
   const macros = loadMacros().filter((m) => !allow || allow.includes(m.key));
   return {
@@ -131,7 +139,7 @@ function manifestFor(deviceId) {
     now: Date.now(),
     app: app.available ? { versionCode: app.versionCode, versionName: app.versionName, sha256: app.sha256, size: app.size, url: app.url } : null,
     config: merged,
-    configRev: sha256(JSON.stringify(merged)).slice(0, 16),
+    configRev: rev,
     macros: macros.map((m) => ({ key: m.key, sha: m.sha, envelope: m.envelope })),
     device: { name: perDevice.name || '', chipPhone: digits(perDevice.chipPhone) },
   };
@@ -162,6 +170,75 @@ const str = (v, max = 120) => (v == null ? '' : String(v)).slice(0, max);
 // Numero do chip: so digitos (o celular manda limpo, mas o config.json pode vir formatado).
 const digits = (v) => String(v == null ? '' : v).replace(/\D/g, '').slice(0, 20);
 
+// ---------------------------------------------------------------------------
+// Comandos avulsos pro celular (POST /api/command)
+// ---------------------------------------------------------------------------
+// O app ja sabe obedecer `command: {id, action}` desde a 2.1 (Sync.applyCommand):
+// cada id roda uma vez so, e o id obedecido volta no relatorio como `commandId`.
+// Faltava so o servidor ter onde anotar o pedido — e nao pode ser no config.json,
+// que vem da imagem do Docker e e read-only na pratica.
+//
+// Fica em memoria e e espelhado em DATA_DIR, igual ao devices.json: comando e
+// coisa de minutos, entao perder num redeploy nao machuca.
+const COMMANDS_FILE = path.join(DATA_DIR, 'commands.json');
+const COMMAND_ACTIONS = ['relearn', 'reaprender', 'restart', 'reiniciar', 'stop', 'parar', 'home', 'inicio'];
+// Sem confirmacao nesse tempo, o pedido caduca: um celular que ficou dias sem
+// sinal nao pode voltar e sair reaprendendo rota por causa de um clique velho.
+const COMMAND_TTL_MS = 15 * 60 * 1000;
+const COMMAND_ALL = '*'; // pedido pra frota inteira
+
+let commands = {};
+try { commands = JSON.parse(fs.readFileSync(COMMANDS_FILE, 'utf8')) || {}; } catch (_) { commands = {}; }
+
+let cmdSaveTimer = null;
+function saveCommandsSoon() {
+  if (cmdSaveTimer) return;
+  cmdSaveTimer = setTimeout(() => {
+    cmdSaveTimer = null;
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(COMMANDS_FILE, JSON.stringify(commands, null, 2));
+    } catch (e) {
+      // sem volume gravavel: fica so em memoria (o pedido vale minutos mesmo)
+    }
+  }, 500);
+}
+
+function commandFor(deviceId) {
+  const c = commands[deviceId] || commands[COMMAND_ALL];
+  if (!c) return null;
+  if (Date.now() - c.at > COMMAND_TTL_MS) return null;
+  // O da frota inteira nao vale pra quem ja confirmou aquele id.
+  if (c === commands[COMMAND_ALL] && Array.isArray(c.ackBy) && c.ackBy.includes(deviceId)) return null;
+  return c;
+}
+
+function queueCommand(deviceId, action) {
+  const id = `${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+  const key = deviceId || COMMAND_ALL;
+  commands[key] = { id, action, at: Date.now(), deviceId: deviceId || null, ackBy: [] };
+  saveCommandsSoon();
+  return commands[key];
+}
+
+/** O celular confirmou que recebeu (o id obedecido volta no relatorio). */
+function ackCommand(deviceId, commandId) {
+  if (!commandId) return null;
+  const own = commands[deviceId];
+  if (own && own.id === commandId) {
+    delete commands[deviceId];
+    saveCommandsSoon();
+    return own;
+  }
+  const all = commands[COMMAND_ALL];
+  if (all && all.id === commandId && !all.ackBy.includes(deviceId)) {
+    all.ackBy.push(deviceId);
+    saveCommandsSoon();
+    return all;
+  }
+  return null;
+}
+
 function recordDevice(report, ip) {
   const id = str(report.id, 64);
   if (!id) return null;
@@ -190,6 +267,7 @@ function recordDevice(report, ip) {
     service: !!report.service,
     state: report.state && typeof report.state === 'object' ? report.state : {},
     battery: Number.isFinite(Number(report.battery)) ? Number(report.battery) : -1,
+    charging: report.charging === true,
     canInstall: report.canInstall !== false,
     update: report.update && typeof report.update === 'object' ? report.update : {},
     macros: Array.isArray(report.macros) ? report.macros.slice(0, 50) : [],
@@ -204,6 +282,12 @@ function recordDevice(report, ip) {
     lastSeen: Date.now(),
     firstSeen: (devices[id] && devices[id].firstSeen) || Date.now(),
   };
+  // Confirmou o comando que estava pendente? Ele sai da fila. Isso diz que o
+  // celular RECEBEU (o app grava o id antes de executar), nao que deu certo:
+  // quem julga o resultado e o monitor nos minutos seguintes.
+  const acked = ackCommand(id, d.commandId);
+  d.commandAckAt = acked ? Date.now() : (prev.commandAckAt || 0);
+  d.commandAckId = acked ? d.commandId : (prev.commandAckId || '');
   devices[id] = d;
   saveDevicesSoon();
   return d;
@@ -277,8 +361,38 @@ const server = http.createServer(async (req, res) => {
         config: cfg,
         configRev: sha256(JSON.stringify(merged)).slice(0, 16),
         tokenRequired: !!TOKEN,
-        devices: Object.values(devices).sort((a, b) => b.lastSeen - a.lastSeen),
+        devices: Object.values(devices)
+          .sort((a, b) => b.lastSeen - a.lastSeen)
+          .map((d) => {
+            // Comando ainda esperando o celular. O painel usa isso pra dizer
+            // "aguardando" em vez de deixar clicar de novo a cada segundo.
+            const c = commandFor(d.id);
+            return c ? { ...d, command: { id: c.id, action: c.action, at: c.at } } : d;
+          }),
       });
+    }
+
+    // Manda um comando pro celular (o app obedece no proximo sync).
+    // Corpo: { deviceId?, action }. Sem deviceId, vale pra frota inteira.
+    if (req.method === 'POST' && p === '/api/command') {
+      if (!authorized(req)) return send(res, 401, { ok: false, error: 'token inválido' });
+      let body;
+      try {
+        body = JSON.parse((await readBody(req, 4 * 1024)) || '{}');
+      } catch (e) {
+        return send(res, 400, { ok: false, error: 'JSON inválido' });
+      }
+      const action = str(body.action, 20).trim().toLowerCase();
+      if (!COMMAND_ACTIONS.includes(action)) {
+        return send(res, 400, { ok: false, error: `ação desconhecida: ${action || '(vazia)'}` });
+      }
+      const deviceId = str(body.deviceId, 64).trim();
+      if (deviceId && !devices[deviceId]) {
+        return send(res, 404, { ok: false, error: 'celular não encontrado' });
+      }
+      const c = queueCommand(deviceId, action);
+      console.log(`[comando] ${action} -> ${deviceId || 'todos'} (id ${c.id})`);
+      return send(res, 200, { ok: true, id: c.id, action: c.action, deviceId: deviceId || null });
     }
 
     if (req.method === 'GET' && p === '/apk/AutoClick.apk') {

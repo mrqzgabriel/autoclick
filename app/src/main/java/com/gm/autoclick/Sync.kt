@@ -1,6 +1,8 @@
 package com.gm.autoclick
 
 import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
 import android.graphics.Point
 import android.os.BatteryManager
 import android.os.Build
@@ -351,6 +353,7 @@ object Sync {
             .put("service", s != null)
             .put("state", s?.stateJson() ?: JSONObject().put("playing", false))
             .put("battery", batteryPct(ctx))
+            .put("charging", isCharging(ctx))
             .put("canInstall", Updater.canInstall(ctx))
             .put("update", Updater.stateJson())
             .put("macros", synced)
@@ -369,6 +372,21 @@ object Sync {
             ?.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY) ?: -1
     } catch (_: Throwable) {
         -1
+    }
+
+    /**
+     * Esta no carregador? O painel do AllWin mostra o raio com isto. Aparelho
+     * configurado vive no cabo (a tela nunca apaga), entao o que interessa e
+     * justamente ver quem CAIU do carregador antes da bateria acabar.
+     */
+    private fun isCharging(ctx: Context): Boolean = try {
+        val i = ctx.registerReceiver(null, IntentFilter(Intent.ACTION_BATTERY_CHANGED))
+        when (i?.getIntExtra(BatteryManager.EXTRA_STATUS, -1)) {
+            BatteryManager.BATTERY_STATUS_CHARGING, BatteryManager.BATTERY_STATUS_FULL -> true
+            else -> false
+        }
+    } catch (_: Throwable) {
+        false
     }
 
     // =====================================================================

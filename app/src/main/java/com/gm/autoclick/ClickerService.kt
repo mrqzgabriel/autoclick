@@ -88,6 +88,18 @@ class ClickerService : AccessibilityService() {
         private const val RETRY_AFTER_RECOVER_MS = 4_000L
         private const val OFF_ROUTE_FAST_RETRIES = 2
 
+        // Teto pra clicar no NO da ancora em vez da coordenada: acima disso o
+        // elemento e grande demais pra ser botao (o "root" do Chrome e a pagina
+        // inteira) e clicar nele cairia em qualquer lugar.
+        private const val MAX_ANCHOR_SCREEN_PCT = 12
+
+        // Fora de rota SEGUIDAS no mesmo passo ate desconfiar do que foi aprendido.
+        // Uma ancora gravada com um popup na frente (o "btnOk" e o
+        // "privacy_sandbox_dialog_scroll_view" de 10/09) some da tela pra sempre e
+        // travava o celular ate alguem ir la com o cabo.
+        private const val FORGET_ANCHOR_AFTER = 3
+        private const val FORGET_APP_AFTER = 6
+
         // Botao do seletor de abas do navegador (o quadradinho com o número).
         private val TAB_SWITCHER_IDS = setOf(
             "tab_switcher_button", "tab_switcher_toolbar_button", "tabs_button"
@@ -252,6 +264,8 @@ class ClickerService : AccessibilityService() {
     // ---------- guarda de rota (v1.9) ----------
     private var guardWaitedMs = 0L         // ha quanto tempo espera o app certo
     private var offRouteStreak = 0         // saidas de rota seguidas (zera ao completar)
+    private var lastOffRouteStep = -1      // em qual passo foi a ultima saida de rota
+    private var offRouteStepStreak = 0     // ...e quantas seguidas nele (zera ao mudar de passo)
     private var recovering = false         // esta no meio da faxina/volta pro inicio
     private var recoveries = 0             // quantas vezes se recuperou nesta execucao
     private var waitIsRetry = false        // a espera atual e pos-recuperacao?
@@ -898,6 +912,8 @@ class ClickerService : AccessibilityService() {
         quietSleeping = false
         guardWaitedMs = 0L
         offRouteStreak = 0
+        lastOffRouteStep = -1
+        offRouteStepStreak = 0
         recovering = false
         // uma faxina em voo da execucao anterior nao pode mexer nesta
         recoverGen++
@@ -973,6 +989,8 @@ class ClickerService : AccessibilityService() {
         quietSleeping = false
         guardWaitedMs = 0L
         offRouteStreak = 0
+        lastOffRouteStep = -1
+        offRouteStepStreak = 0
         recovering = false
         waitIsRetry = false
         updateBubble()
@@ -1139,6 +1157,8 @@ class ClickerService : AccessibilityService() {
             // Passada inteira sem sair da rota: zera o contador, senao uma falha
             // isolada de horas atras ainda estaria encurtando as tentativas.
             offRouteStreak = 0
+            lastOffRouteStep = -1
+            offRouteStepStreak = 0
             guardWaitedMs = 0L
             chipPhoneCaptured = false
             // Modo intervalo: uma passada feita, agenda a proxima e mostra a contagem.
@@ -1205,6 +1225,21 @@ class ClickerService : AccessibilityService() {
             if (step.app.isBlank()) {
                 // Macro gravado antes da v1.9 (ou passo novo): aprende a rota na
                 // primeira passada em vez de exigir regravacao.
+                //
+                // Mas nao grava a tela que ainda esta SAINDO: o passo anterior
+                // tocou "Abrir no WhatsApp", o delay gravado acabou e o WhatsApp
+                // ainda nao apareceu — aprender agora fixa "Chrome" no passo do
+                // WhatsApp e o macro trava toda passada dali pra frente (foi o que
+                // aconteceu ao reaprender os chips 11980169399 e 11979551124 em
+                // 10/09: precisei mandar reaprender de novo, olhando o log).
+                // Entao, quando a tela e a mesma do passo anterior, espera pela
+                // troca; se nao vier, aprende o que esta ali — que e o caso
+                // legitimo de dois passos seguidos no mesmo app.
+                if (front.isNotBlank() && front == previousStepApp() &&
+                    keepWaiting("aprendendo: tela ainda e a do passo anterior ($front)")
+                ) {
+                    return
+                }
                 if (front.isNotBlank()) {
                     step.app = front
                     Store.update(this, m)
@@ -1313,6 +1348,24 @@ class ClickerService : AccessibilityService() {
         if (pts.isEmpty()) {
             done(false)
             return
+        }
+
+        // O alvo esta na tela, mas saiu do lugar? Clica NELE em vez da coordenada.
+        // Foi o que segurou o chip 11984953915 em 10/09: quando chega mensagem nao
+        // lida de numero fora dos contatos, o WhatsApp enfia o painel
+        // BLOQUEAR/ADICIONAR acima da barra de digitacao, o botao "send" sobe e o
+        // toque gravado cai embaixo dele — passada perdida, todas as vezes.
+        if (step.type == Step.TAP && pts.size == 1 && step.anchor.isNotBlank()) {
+            val node = clickableAnchorOffSpot(step.anchor, pts[0])
+            if (node != null) {
+                val ok = clickNode(node)
+                Log.i(TAG, "alvo \"${step.anchor}\" fora do ponto gravado: cliquei nele ok=$ok ${describe(node)}")
+                if (ok) {
+                    done(true)
+                    return
+                }
+                // Nao aceitou o clique: cai no gesto por coordenada, como sempre.
+            }
         }
 
         val path = Path()
@@ -1761,6 +1814,58 @@ class ClickerService : AccessibilityService() {
         return ""
     }
 
+    /** App que o passo ANTERIOR espera, ou "" no primeiro passo da passada. */
+    private fun previousStepApp(): String {
+        if (stepIndex <= 0) return ""
+        return current?.steps?.getOrNull(stepIndex - 1)?.app ?: ""
+    }
+
+    /** O no da ancora na tela da FRENTE, ou null. */
+    private fun findNodeById(id: String): AccessibilityNodeInfo? = findFirst(activeRoots()) { n ->
+        n.isVisibleToUser && (n.viewIdResourceName ?: "").substringAfterLast('/') == id
+    }
+
+    /**
+     * O no da ancora, quando ele esta na tela mas FORA do ponto gravado e da pra
+     * clicar nele com seguranca. Null quando nao vale a pena — e ai o passo toca
+     * na coordenada, como sempre.
+     *
+     * As duas travas existem porque nem toda ancora e um botao: o passo do
+     * navegador aprendeu o alvo "root", que e a PAGINA INTEIRA do Chrome. Clicar
+     * nesse no seria clicar no meio da pagina, em qualquer coisa. Entao so segue
+     * quem for pequeno perto da tela e clicavel de verdade.
+     */
+    private fun clickableAnchorOffSpot(anchor: String, spot: Pt): AccessibilityNodeInfo? {
+        val node = findNodeById(anchor) ?: return null
+        val r = Rect()
+        try {
+            node.getBoundsInScreen(r)
+        } catch (_: Throwable) {
+            return null
+        }
+        if (r.isEmpty) return null
+        // No lugar de sempre: nao mexe, o gesto por coordenada resolve.
+        if (r.contains(spot.x.toInt(), spot.y.toInt())) return null
+        val size = displaySize()
+        val tela = size.x.toLong() * size.y.toLong()
+        if (tela <= 0L) return null
+        val area = r.width().toLong() * r.height().toLong()
+        if (area * 100L > tela * MAX_ANCHOR_SCREEN_PCT) return null
+        // Clicavel no mesmo criterio do clickNode (ele mesmo ou um ancestral perto).
+        var n: AccessibilityNodeInfo? = node
+        var hops = 0
+        while (n != null && hops < 6) {
+            if (n.isClickable) return node
+            n = try {
+                n.parent
+            } catch (_: Throwable) {
+                null
+            }
+            hops++
+        }
+        return null
+    }
+
     /** Esse elemento esta visivel na tela da FRENTE agora? */
     private fun hasNodeWithId(id: String): Boolean = findFirst(activeRoots()) { n ->
         n.isVisibleToUser && (n.viewIdResourceName ?: "").substringAfterLast('/') == id
@@ -1859,6 +1964,36 @@ class ClickerService : AccessibilityService() {
     }
 
     /**
+     * O mesmo passo saiu de rota vezes demais seguidas: o que ele aprendeu esta
+     * errado. Esquece o alvo (e, se insistir, o app tambem) pra reaprender na
+     * proxima passada, em vez de recomecar pra sempre.
+     *
+     * Isto e o "relearn" automatico daquele passo. Sem ele, uma ancora gravada
+     * com um popup na frente prendia o celular ate alguem plugar o cabo — foi o
+     * que aconteceu com 7 dos 60 aparelhos em 10/09, um deles parado desde 04/08.
+     */
+    private fun forgetLearnedIfStuck(step: Step) {
+        val m = current ?: return
+        when (offRouteStepStreak) {
+            FORGET_ANCHOR_AFTER -> {
+                if (step.anchor.isBlank()) return
+                Log.i(TAG, "passo ${stepIndex + 1}: esqueci o alvo \"${step.anchor}\" (travou $offRouteStepStreak vezes)")
+                step.anchor = ""
+                Store.update(this, m)
+                toast("Alvo do passo ${stepIndex + 1} não aparece mais. Vou reaprender.")
+            }
+            FORGET_APP_AFTER -> {
+                if (step.app.isBlank()) return
+                Log.i(TAG, "passo ${stepIndex + 1}: esqueci o app \"${step.app}\" (travou $offRouteStepStreak vezes)")
+                step.app = ""
+                step.anchor = ""
+                Store.update(this, m)
+                toast("Rota do passo ${stepIndex + 1} não bate. Vou reaprender.")
+            }
+        }
+    }
+
+    /**
      * Saiu da rota: o passo esperava um app e a tela esta em outro. Faz a faxina
      * e recomeca a passada do zero, em vez de seguir tocando por coordenada numa
      * tela que nao e a de sempre.
@@ -1867,11 +2002,18 @@ class ClickerService : AccessibilityService() {
         offRouteStreak++
         recoveries++
         guardWaitedMs = 0L
+        // Contador POR PASSO: o offRouteStreak e da execucao inteira e, como toda
+        // saida de rota volta pro passo 0, ele nunca soube dizer QUEM esta
+        // travando. Este sabe — e e o que autoriza esquecer o que foi aprendido.
+        if (stepIndex == lastOffRouteStep) offRouteStepStreak++ else offRouteStepStreak = 1
+        lastOffRouteStep = stepIndex
         Log.i(
             TAG,
             "FORA DE ROTA no passo ${stepIndex + 1}: esperava ${step.app}, achei " +
-                "${found.ifBlank { "nada" }} (seguidas=$offRouteStreak total=$recoveries)"
+                "${found.ifBlank { "nada" }} (seguidas=$offRouteStreak total=$recoveries " +
+                "neste passo=$offRouteStepStreak)"
         )
+        forgetLearnedIfStuck(step)
         // Dentro do WhatsApp, anota o que estava na tela: e assim que se descobre
         // o texto de um dialogo novo sem precisar do cabo.
         if (found.contains("whatsapp", true)) logVisibleNodes("whatsapp/fora-de-rota")
@@ -2226,6 +2368,10 @@ class ClickerService : AccessibilityService() {
         .put("macroId", current?.id ?: "")
         .put("step", stepIndex)
         .put("steps", current?.steps?.size ?: 0)
+        // A rota que o passo atual espera. Sem isto, descobrir POR QUE um celular
+        // trava exige plugar o cabo e ler o logcat — foi a tarde inteira de 10/09.
+        .put("stepApp", current?.steps?.getOrNull(stepIndex)?.app ?: "")
+        .put("stepAnchor", current?.steps?.getOrNull(stepIndex)?.anchor ?: "")
         .put("loops", loopDone)
         .put("resets", recoveries)
         .put("waiting", waitingGap)
