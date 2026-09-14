@@ -4,6 +4,8 @@
  *
  *  GET  /                      painel de status (quais celulares, versão, estado)
  *  GET  /api/devices           JSON pro painel
+ *  POST /api/command           comando pro celular (restart/relearn/stop/home) ou
+ *                              "especial" (liga o macro no modo Especial)
  *  POST /api/sync              o celular manda o relatório e recebe o manifesto
  *  GET  /api/manifest          manifesto genérico (debug)
  *  GET  /apk/AutoClick.apk     o APK publicado (gerado no build do Docker)
@@ -131,6 +133,11 @@ function manifestFor(deviceId) {
   const rev = sha256(JSON.stringify(merged)).slice(0, 16);
   const cmd = deviceId ? commandFor(deviceId) : null;
   if (cmd) merged.command = { id: cmd.id, action: cmd.action };
+  // Pedido de modo Especial pendente pra este celular: vai como o `autorun` SO
+  // dele (ver "Modo Especial pelo painel"). Tambem fora do configRev, pelo
+  // mesmo motivo do comando.
+  const esp = deviceId ? especialFor(deviceId) : null;
+  if (esp) merged.autorun = especialAutorun(esp);
 
   const allow = Array.isArray(perDevice.macros) ? perDevice.macros : null;
   const macros = loadMacros().filter((m) => !allow || allow.includes(m.key));
@@ -239,6 +246,85 @@ function ackCommand(deviceId, commandId) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// Modo Especial pelo painel (POST /api/command {deviceId, action: "especial"})
+// ---------------------------------------------------------------------------
+// O app nao tem comando "rodar": os avulsos sao stop/restart/relearn/home, e o
+// restart so recomeca o que ja estava rodando (ou o ultimo estado gravado). O
+// que ele TEM e o `autorun` do config — {enabled, macro, gapMs, quiet, runId}:
+// toda combinacao nova de valores faz o celular ir pra tela inicial e comecar
+// o macro (Sync.applyAutorun), e quiet=true e o modo Especial (5 min entre
+// passadas, dorme das 21h as 9h). Entao "ligar o Especial" num celular e mandar
+// SO PRA ELE um autorun com runId novo. Nada muda no app: a 2.1 que esta nos
+// celulares obedece isso desde a 2.0.
+//
+// O celular devolve no relatorio o `autorunFp` que aplicou (a mesma string
+// "enabled|macro|gapMs|quiet|runId" que o app monta); quando bate com o que
+// mandamos, ele recebeu e o pedido sai daqui. Dai o manifesto volta ao autorun
+// geral do config.json (enabled=false), que o app so anota e nao faz nada — nao
+// para quem esta rodando. Mesma vida dos comandos: memoria + espelho em
+// DATA_DIR, e caduca em 15 min sem confirmacao.
+const ESPECIAL_FILE = path.join(DATA_DIR, 'especial.json');
+const ESPECIAL_ACTIONS = ['especial', 'special'];
+
+let especial = {}; // deviceId -> { runId, at, macro, gapMs }
+try { especial = JSON.parse(fs.readFileSync(ESPECIAL_FILE, 'utf8')) || {}; } catch (_) { especial = {}; }
+
+let espSaveTimer = null;
+function saveEspecialSoon() {
+  if (espSaveTimer) return;
+  espSaveTimer = setTimeout(() => {
+    espSaveTimer = null;
+    try {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+      fs.writeFileSync(ESPECIAL_FILE, JSON.stringify(especial, null, 2));
+    } catch (e) {
+      // sem volume gravavel: fica so em memoria (o pedido vale minutos mesmo)
+    }
+  }, 500);
+}
+
+function especialFor(deviceId) {
+  const e = especial[deviceId];
+  if (!e) return null;
+  if (Date.now() - e.at > COMMAND_TTL_MS) return null;
+  return e;
+}
+
+/** O bloco `autorun` que o celular recebe por causa do pedido. */
+function especialAutorun(e) {
+  return { enabled: true, macro: e.macro, gapMs: e.gapMs, quiet: true, runId: e.runId };
+}
+
+/** A mesma impressao digital que o app grava e devolve (Sync.applyAutorun). */
+function especialFp(e) {
+  const a = especialAutorun(e);
+  return `${a.enabled}|${a.macro}|${a.gapMs}|${a.quiet}|${a.runId}`;
+}
+
+function queueEspecial(deviceId) {
+  const cfg = loadConfig();
+  const base = cfg.autorun && typeof cfg.autorun === 'object' ? cfg.autorun : {};
+  // Macro e intervalo vem do autorun geral do config.json (hoje "aquecimento" a
+  // cada 5 min), pra ser o mesmo Especial que a bolha do app liga. O intervalo
+  // e inteiro e limitado a 1 h igual no app, senao a impressao digital nao bate.
+  const macro = str(base.macro || cfg.selectedMacro || 'aquecimento', 40);
+  const gapMs = Math.min(3_600_000, Math.max(0, Math.round(Number(base.gapMs) || 300_000)));
+  const runId = `${Date.now().toString(36)}-${crypto.randomBytes(4).toString('hex')}`;
+  especial[deviceId] = { runId, at: Date.now(), macro, gapMs };
+  saveEspecialSoon();
+  return especial[deviceId];
+}
+
+/** O relatorio trouxe o autorunFp do pedido: o celular recebeu. */
+function ackEspecial(deviceId, autorunFp) {
+  const e = especial[deviceId];
+  if (!e || !autorunFp || autorunFp !== especialFp(e)) return null;
+  delete especial[deviceId];
+  saveEspecialSoon();
+  return e;
+}
+
 function recordDevice(report, ip) {
   const id = str(report.id, 64);
   if (!id) return null;
@@ -288,6 +374,9 @@ function recordDevice(report, ip) {
   const acked = ackCommand(id, d.commandId);
   d.commandAckAt = acked ? Date.now() : (prev.commandAckAt || 0);
   d.commandAckId = acked ? d.commandId : (prev.commandAckId || '');
+  // Idem pro pedido de modo Especial: o autorunFp que voltou e o que mandamos.
+  const espAcked = ackEspecial(id, d.autorunFp);
+  d.especialAckAt = espAcked ? Date.now() : (prev.especialAckAt || 0);
   devices[id] = d;
   saveDevicesSoon();
   return d;
@@ -364,10 +453,16 @@ const server = http.createServer(async (req, res) => {
         devices: Object.values(devices)
           .sort((a, b) => b.lastSeen - a.lastSeen)
           .map((d) => {
-            // Comando ainda esperando o celular. O painel usa isso pra dizer
-            // "aguardando" em vez de deixar clicar de novo a cada segundo.
+            // Comando (ou pedido de modo Especial) ainda esperando o celular. O
+            // painel usa isso pra dizer "aguardando" em vez de deixar clicar de
+            // novo a cada segundo.
             const c = commandFor(d.id);
-            return c ? { ...d, command: { id: c.id, action: c.action, at: c.at } } : d;
+            const e = especialFor(d.id);
+            return {
+              ...d,
+              ...(c ? { command: { id: c.id, action: c.action, at: c.at } } : {}),
+              ...(e ? { especial: { runId: e.runId, at: e.at, macro: e.macro, gapMs: e.gapMs } } : {}),
+            };
           }),
       });
     }
@@ -383,10 +478,19 @@ const server = http.createServer(async (req, res) => {
         return send(res, 400, { ok: false, error: 'JSON inválido' });
       }
       const action = str(body.action, 20).trim().toLowerCase();
+      const deviceId = str(body.deviceId, 64).trim();
+      if (ESPECIAL_ACTIONS.includes(action)) {
+        // Modo Especial e por celular: sem deviceId nao vale (ligar a frota
+        // inteira e papel do autorun geral do config.json).
+        if (!deviceId) return send(res, 400, { ok: false, error: 'modo Especial precisa de deviceId' });
+        if (!devices[deviceId]) return send(res, 404, { ok: false, error: 'celular não encontrado' });
+        const e = queueEspecial(deviceId);
+        console.log(`[especial] ${deviceId} macro=${e.macro} intervalo=${e.gapMs / 1000}s (runId ${e.runId})`);
+        return send(res, 200, { ok: true, id: e.runId, action: 'especial', deviceId });
+      }
       if (!COMMAND_ACTIONS.includes(action)) {
         return send(res, 400, { ok: false, error: `ação desconhecida: ${action || '(vazia)'}` });
       }
-      const deviceId = str(body.deviceId, 64).trim();
       if (deviceId && !devices[deviceId]) {
         return send(res, 404, { ok: false, error: 'celular não encontrado' });
       }
