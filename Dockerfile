@@ -58,11 +58,14 @@ ARG SERVER_URL=""
 ARG SYNC_TOKEN=""
 ARG VERSION_NAME=""
 
-# versionCode = segundos desde 2023-11-14 (cresce a cada build; sempre maior
-# que o instalado). Só roda quando app/ mudou, então macro novo não gera APK
-# novo nem atualização à toa nos celulares.
+# versionCode: o de gradle.properties (autoclick.versionCode), TRAVADO de
+# propósito — o EasyPanel não guarda o cache destas camadas, então este passo
+# roda em todo deploy, e um número novo a cada build fazia os celulares baixarem
+# e pedirem toque pra instalar a mesma versão. Sem a chave lá, vale o antigo:
+# segundos desde 2023-11-14 (cresce a cada build; sempre maior que o instalado).
 RUN set -e; \
-    CODE=$(( $(date +%s) - 1700000000 )); \
+    PIN=$(sed -n 's/^autoclick\.versionCode=\(.*\)$/\1/p' gradle.properties | tr -d '[:space:]'); \
+    CODE=${PIN:-$(( $(date +%s) - 1700000000 ))}; \
     EXTRA="-Pautoclick.versionCode=$CODE"; \
     if [ -n "$SERVER_URL" ];   then EXTRA="$EXTRA -Pautoclick.serverUrl=$SERVER_URL"; fi; \
     if [ -n "$SYNC_TOKEN" ];   then EXTRA="$EXTRA -Pautoclick.syncToken=$SYNC_TOKEN"; fi; \

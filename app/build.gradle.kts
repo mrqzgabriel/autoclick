@@ -4,9 +4,10 @@ plugins {
 }
 
 // ---- versão ----
-// versionCode: vem de -Pautoclick.versionCode (o Dockerfile passa segundos
-// desde 2023-11-14). Sem ele, o mesmo cálculo aqui: todo build tem um número
-// maior que o anterior, e o Android só instala por cima se for maior.
+// versionCode: vem de -Pautoclick.versionCode — o Dockerfile passa o número
+// travado em gradle.properties (ver lá por quê) ou, sem ele, segundos desde
+// 2023-11-14. Sem nada, o mesmo cálculo aqui: todo build tem um número maior
+// que o anterior, e o Android só instala por cima se for maior.
 fun prop(name: String): String = (project.findProperty(name) as String?)?.trim().orEmpty()
 val verCode: Int = prop("autoclick.versionCode").toIntOrNull()
     ?: ((System.currentTimeMillis() / 1000L) - 1_700_000_000L).toInt()
