@@ -49,6 +49,11 @@ class ClickerService : AccessibilityService() {
         private var live: ClickerService? = null
         private const val TAG = "AutoClick"
 
+        // Painel de notificacoes, ajustes rapidos ou um dialogo do sistema
+        // cobrindo a tela: NUNCA e o destino de um passo de verdade, entao
+        // nunca pode virar app aprendido (ver o comentario no passo 0c).
+        private const val SYSTEMUI_PACKAGE = "com.android.systemui"
+
         /**
          * Só devolve o serviço se ele ainda estiver vivo. Sem isso, uma instância
          * antiga (token de janela já morto) faz addView falhar sem explicação.
@@ -1333,6 +1338,21 @@ class ClickerService : AccessibilityService() {
             // (aprendeu "secondary_button" = Cancelar e clicou nele no 2o Redmi).
             if (advanceIntermediary(front)) {
                 scheduleRunner(GUARD_POLL_MS)
+                return
+            }
+
+            // ---- 0c) com.android.systemui na frente: painel de notificacoes,
+            // ajustes rapidos ou um dialogo do sistema cobrindo a tela. Tenta
+            // fechar a cada tick enquanto espera. NUNCA pode cair no aprendizado
+            // do passo 1 (abaixo) nem no "esqueci o app, uso o que esta na
+            // tela": foi exatamente isso que aconteceu num Redmi em 29/09 — o
+            // passo 1 esqueceu com.miui.home, "aprendeu" com.android.systemui
+            // (a barra ainda estava aberta) e passou a tocar com a barra por
+            // cima pra sempre, sem nunca chegar no icone do AllWin de verdade.
+            if (front == SYSTEMUI_PACKAGE) {
+                dismissShade()
+                if (keepWaiting("painel do sistema cobrindo a tela")) return
+                onOffRoute(step, front)
                 return
             }
 
