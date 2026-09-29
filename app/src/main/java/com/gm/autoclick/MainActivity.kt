@@ -1,9 +1,12 @@
 package com.gm.autoclick
 
+import android.Manifest
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
+import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
 import android.text.InputType
@@ -37,9 +40,20 @@ class MainActivity : AppCompatActivity() {
             if (uri != null) importFrom(uri)
         }
 
+    // So pra notificacao do servico em primeiro plano aparecer (Android 13+
+    // exige essa permissao pra qualquer notificacao); sem ela o servico
+    // continua protegido do mesmo jeito, so fica sem o aviso visivel.
+    private val notifLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+        ) {
+            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        }
 
         status = findViewById(R.id.tvStatus)
         listContainer = findViewById(R.id.listContainer)

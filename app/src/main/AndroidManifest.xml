@@ -9,6 +9,15 @@
          se atualizar sem ninguem confirmar. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.UPDATE_PACKAGES_WITHOUT_USER_ACTION" />
+    <!-- Servico em primeiro plano + notificacao: sem isso o HyperOS mata o
+         processo em segundo plano (celular fica "recuperado" e nunca mais
+         volta a tocar, porque nao ha ninguem vivo pra continuar). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Mantem a CPU acordada enquanto o macro roda, senao o Doze atrasa os
+         timers do Handler e o loop parece travado no meio da noite. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <application
         android:allowBackup="true"
@@ -54,13 +63,17 @@
             android:name=".ClickerService"
             android:exported="true"
             android:label="@string/service_label"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:foregroundServiceType="specialUse">
             <intent-filter>
                 <action android:name="android.accessibilityservice.AccessibilityService" />
             </intent-filter>
             <meta-data
                 android:name="android.accessibilityservice"
                 android:resource="@xml/accessibility_service_config" />
+            <property
+                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
+                android:value="Mantem o macro de toques rodando em segundo plano" />
         </service>
     </application>
 

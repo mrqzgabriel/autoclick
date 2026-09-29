@@ -2,6 +2,9 @@ package com.gm.autoclick
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Path
@@ -12,6 +15,7 @@ import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.os.Handler
 import android.os.Looper
+import android.os.PowerManager
 import android.os.SystemClock
 import android.util.Log
 import android.view.Gravity
@@ -26,6 +30,8 @@ import android.widget.FrameLayout
 import android.widget.LinearLayout
 import android.widget.TextView
 import android.widget.Toast
+import androidx.core.app.NotificationCompat
+import androidx.core.app.ServiceCompat
 import org.json.JSONObject
 import kotlin.math.abs
 import kotlin.math.max
@@ -214,6 +220,22 @@ class ClickerService : AccessibilityService() {
         // Recuperacao que passa disso esta empacada (algum passo da faxina nao
         // voltou): desiste dela e recomeca a passada do zero.
         private const val RECOVER_STALL_MS = 60_000L
+
+        // ---------- servico em primeiro plano ----------
+        // Sem notificacao fixa o HyperOS trata o AutoClick como "so mais um app
+        // em segundo plano" e mata o processo (memoria, "otimizacao de bateria")
+        // sem avisar ninguem: a bolha fica congelada mostrando "recuperado" pra
+        // sempre porque nao ha mais processo vivo pra continuar a passada. Uma
+        // notificacao de servico ativo e o jeito padrao de dizer ao Android
+        // "isto esta em uso, nao mate".
+        private const val NOTIF_CHANNEL_ID = "autoclick_running"
+        private const val NOTIF_ID = 1
+
+        // Trava a CPU acordada emquanto o macro roda: sem isto o Doze atrasa os
+        // timers do Handler (vigia incluido) e o loop parece travado durante a
+        // noite. 6h de teto por seguranca — se algo travar de verdade, o Android
+        // libera a CPU sozinho em vez de drenar a bateria pra sempre.
+        private const val WAKE_LOCK_TIMEOUT_MS = 6 * 60 * 60 * 1000L
     }
 
     private var dead = false
@@ -279,12 +301,24 @@ class ClickerService : AccessibilityService() {
     private var dispatching = false        // um gesto esta em voo (nao cutucar)
     private var recoverGen = 0             // geracao da recuperacao (mata callback velho)
 
+    // ---------- servico em primeiro plano + CPU acordada ----------
+    private var wakeLock: PowerManager.WakeLock? = null
+
     override fun onServiceConnected() {
         super.onServiceConnected()
         dead = false
         live = this
         wm = getSystemService(WINDOW_SERVICE) as WindowManager
         Log.i(TAG, "onServiceConnected")
+        // Primeiro plano ANTES de tudo: e a protecao contra o HyperOS matar o
+        // processo em segundo plano (ver NOTIF_CHANNEL_ID acima). Sem ela o
+        // resto desta funcao roda do mesmo jeito, mas o celular sem cabo e sem
+        // tela ligada fica vulneravel a "otimizacao de bateria" derrubar tudo.
+        try {
+            goForeground()
+        } catch (t: Throwable) {
+            Log.e(TAG, "falha ao virar servico em primeiro plano", t)
+        }
         // Blindagem: qualquer tropeço aqui derrubava o serviço inteiro, e o
         // Android marcava "Este serviço está com problemas" sem dizer por quê.
         // Registrado como conectado antes de desenhar, então mesmo que a bolha
@@ -355,6 +389,7 @@ class ClickerService : AccessibilityService() {
 
     private fun cleanup() {
         handler.removeCallbacksAndMessages(null)
+        releaseWakeLock()
         playing = false
         recording = false
         removeView(recordRoot)
@@ -898,6 +933,7 @@ class ClickerService : AccessibilityService() {
             toast("Esse macro esta vazio")
             return
         }
+        acquireWakeLock()
         current = macro
         stepIndex = 0
         loopDone = 0
@@ -977,6 +1013,7 @@ class ClickerService : AccessibilityService() {
     fun stopPlayback(message: String?, userAsked: Boolean = true) {
         if (playing) Log.i(TAG, "parando: ${message ?: "sem aviso"} (loops feitos=$loopDone, pedido=$userAsked)")
         if (userAsked) Store.clearRunState(this)
+        releaseWakeLock()
         handler.removeCallbacks(runner)
         handler.removeCallbacks(waitTicker)
         playing = false
@@ -995,6 +1032,65 @@ class ClickerService : AccessibilityService() {
         waitIsRetry = false
         updateBubble()
         if (message != null) toast(message)
+    }
+
+    /**
+     * Vira servico em primeiro plano com uma notificacao fixa e discreta. E
+     * a diferenca entre o HyperOS ver o AutoClick como "app parado em segundo
+     * plano" (mata a qualquer hora) e "servico em uso" (so mata em extremos,
+     * e ainda assim o servico de acessibilidade costuma religar sozinho).
+     */
+    private fun goForeground() {
+        val nm = getSystemService(NOTIFICATION_SERVICE) as NotificationManager
+        if (nm.getNotificationChannel(NOTIF_CHANNEL_ID) == null) {
+            nm.createNotificationChannel(
+                NotificationChannel(NOTIF_CHANNEL_ID, "AutoClick ativo", NotificationManager.IMPORTANCE_MIN)
+                    .apply { setShowBadge(false) }
+            )
+        }
+        val openApp = PendingIntent.getActivity(
+            this, 0, Intent(this, MainActivity::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        val notification = NotificationCompat.Builder(this, NOTIF_CHANNEL_ID)
+            .setContentTitle("AutoClick")
+            .setContentText("Serviço de acessibilidade ativo")
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
+            .setOngoing(true)
+            .setContentIntent(openApp)
+            .setPriority(NotificationCompat.PRIORITY_MIN)
+            .build()
+        ServiceCompat.startForeground(
+            this, NOTIF_ID, notification,
+            android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE
+        )
+        Log.i(TAG, "servico em primeiro plano")
+    }
+
+    /**
+     * Trava a CPU acordada enquanto o macro toca: sem isto o Doze atrasa os
+     * timers do Handler (o vigia incluido) fora da tela ligada, e um celular
+     * deixado a noite parece travado quando so estava dormindo demais.
+     */
+    private fun acquireWakeLock() {
+        try {
+            if (wakeLock?.isHeld == true) return
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "$TAG:playing").apply {
+                setReferenceCounted(false)
+                acquire(WAKE_LOCK_TIMEOUT_MS)
+            }
+        } catch (t: Throwable) {
+            Log.e(TAG, "falha ao travar a CPU acordada", t)
+        }
+    }
+
+    private fun releaseWakeLock() {
+        try {
+            wakeLock?.let { if (it.isHeld) it.release() }
+        } catch (t: Throwable) {
+            Log.e(TAG, "falha ao soltar a CPU acordada", t)
+        }
     }
 
     private val runner = Runnable { tick() }
@@ -1125,7 +1221,26 @@ class ClickerService : AccessibilityService() {
         return low + Random.nextInt(steps) * 1000L
     }
 
+    /**
+     * So chama tickInner() blindado. A arvore de acessibilidade de alguns
+     * HyperOS solta excecao em no "selado" quando a tela troca no meio da
+     * leitura (visto no log como IllegalStateException do proprio Android);
+     * sem este catch ela derrubava o processo inteiro e a bolha ficava
+     * congelada mostrando o ultimo texto pra sempre — o mesmo sintoma do
+     * app "morto" pelo sistema, so que causado pelo nosso proprio codigo.
+     * O vigia (watchTick) cobre a retomada se mesmo assim travar de novo.
+     */
     private fun tick() {
+        try {
+            tickInner()
+        } catch (t: Throwable) {
+            Log.e(TAG, "tick tropecou, tentando de novo", t)
+            dispatching = false
+            if (playing) scheduleRunner(RETRY_AFTER_RECOVER_MS)
+        }
+    }
+
+    private fun tickInner() {
         if (!playing || paused) return
         val m = current ?: run {
             // userAsked=false: e um erro interno transitorio, nao um parar do
@@ -1310,32 +1425,42 @@ class ClickerService : AccessibilityService() {
         // enquanto o gesto nao volta, o vigia nao deve achar que o laco morreu
         dispatching = true
         dispatchStep(step, m.speed) { ok ->
-            dispatching = false
-            Log.i(TAG, "gesto ${if (ok) "ok" else "recusado"}")
-            if (!playing) return@dispatchStep
-            if (ok) {
-                failures = 0
-                stepIndex++
-            } else {
-                failures++
-                if (failures >= 3) {
-                    // ANTES isto encerrava de vez, e ninguem religava: bastavam
-                    // 3 recusas (tela apagando, sistema ocupado) pra o macro
-                    // morrer calado no meio da madrugada. Agora e so mais um
-                    // caso de recuperacao, com o mesmo freio dos outros.
-                    Log.i(TAG, "3 gestos recusados seguidos; tratando como fora de rota")
+            // Callback assincrono do sistema (onCompleted/onCancelled): chega
+            // FORA da pilha do tick(), entao o try/catch dele nao protege
+            // aqui. Sem este proprio catch, uma excecao neste trecho derrubava
+            // o processo do mesmo jeito que o tick() sem blindagem.
+            try {
+                dispatching = false
+                Log.i(TAG, "gesto ${if (ok) "ok" else "recusado"}")
+                if (!playing) return@dispatchStep
+                if (ok) {
                     failures = 0
-                    onOffRoute(m.steps[stepIndex], "gestos recusados")
-                    return@dispatchStep
+                    stepIndex++
+                } else {
+                    failures++
+                    if (failures >= 3) {
+                        // ANTES isto encerrava de vez, e ninguem religava: bastavam
+                        // 3 recusas (tela apagando, sistema ocupado) pra o macro
+                        // morrer calado no meio da madrugada. Agora e so mais um
+                        // caso de recuperacao, com o mesmo freio dos outros.
+                        Log.i(TAG, "3 gestos recusados seguidos; tratando como fora de rota")
+                        failures = 0
+                        onOffRoute(m.steps[stepIndex], "gestos recusados")
+                        return@dispatchStep
+                    }
                 }
+                val next = if (stepIndex < m.steps.size) {
+                    val raw = if (m.fixedDelayMs > 0) m.fixedDelayMs else m.steps[stepIndex].delayBeforeMs
+                    scaled(raw, m.speed)
+                } else {
+                    0L
+                }
+                scheduleRunner(max(next, 20L))
+            } catch (t: Throwable) {
+                Log.e(TAG, "callback do gesto tropecou, tentando de novo", t)
+                dispatching = false
+                if (playing) scheduleRunner(RETRY_AFTER_RECOVER_MS)
             }
-            val next = if (stepIndex < m.steps.size) {
-                val raw = if (m.fixedDelayMs > 0) m.fixedDelayMs else m.steps[stepIndex].delayBeforeMs
-                scaled(raw, m.speed)
-            } else {
-                0L
-            }
-            scheduleRunner(max(next, 20L))
         }
     }
 
